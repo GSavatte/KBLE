@@ -10,7 +10,8 @@ import androidx.compose.ui.Modifier
 
 @Composable
 fun HomeScreen(
-    onRejoindreCourse: () -> Unit
+    onRejoindreCourse: () -> Unit,
+    onDiagnostic: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -21,6 +22,9 @@ fun HomeScreen(
 
         Button(onClick = onRejoindreCourse) {
             Text("Rejoindre une course")
+        }
+        Button(onClick = onDiagnostic) {
+            Text("Tests des balises")
         }
     }
 }

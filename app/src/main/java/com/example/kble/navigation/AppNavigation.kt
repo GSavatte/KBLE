@@ -3,6 +3,7 @@ import androidx.compose.runtime.Composable
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.example.kble.diagnostic.DiagnosticScreen
 import com.example.kble.home.HomeScreen
 import com.example.kble.race.RaceScreen
 
@@ -19,6 +20,9 @@ fun AppNavigation() {
             HomeScreen(
                 onRejoindreCourse = {
                     navController.navigate("race")
+                },
+                onDiagnostic = {
+                    navController.navigate("diagnostic")
                 }
             )
         }
@@ -29,6 +33,11 @@ fun AppNavigation() {
                 onRetour = {
                     navController.popBackStack()
                 }
+            )
+        }
+        composable("diagnostic") {
+            DiagnosticScreen(
+                onRetour = { navController.popBackStack() }
             )
         }
     }
