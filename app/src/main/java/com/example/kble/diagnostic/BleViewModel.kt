@@ -1,121 +1,203 @@
 package com.example.kble.diagnostic
 
 import android.annotation.SuppressLint
+import android.app.Application
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.Context
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.util.Log
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
-
-data class CheckpointEvent(
-    val identifiant: String,
-    val rssiBrut: Int,
-    val timestamp: Long = System.currentTimeMillis()
-)
+import kotlin.math.sqrt
 
 @SuppressLint("MissingPermission")
-class BleViewModel : ViewModel() {
+class BleViewModel(application: Application) : AndroidViewModel(application), SensorEventListener {
 
-    // On stocke le RSSI lissé pour l'affichage diagnostic
+    // --- États pour l'UI ---
+    // Liste brute des balises détectées en direct avec leur RSSI lissé (pour affichage et tri)
     private val _balisesDetectees = MutableStateFlow<Map<String, Int>>(emptyMap())
-    val balisesDetectees = _balisesDetectees.asStateFlow()
+    val balisesBrutes = _balisesDetectees.asStateFlow()
 
-    // Événement émis lors du franchissement d'un checkpoint
-    private val _checkpointEvent = MutableSharedFlow<CheckpointEvent>()
-    val checkpointEvent = _checkpointEvent.asSharedFlow()
+    // Liste officielle des balises validées et enregistrées par l'admin
+    private val _balisesValidees = MutableStateFlow<List<BaliseBleTrack>>(emptyList())
+    val balisesValidees = _balisesValidees.asStateFlow()
 
-    // Dictionnaire pour stocker l'état précédent du lissage pour chaque balise
+    private val _distanceActuelle = MutableStateFlow(0.0)
+    val distanceActuelle = _distanceActuelle.asStateFlow()
+
+    // --- Logique interne ---
     private val historiqueLissage = mutableMapOf<String, Double>()
-
-    // Anti-rebond (cooldown) pour éviter d'émettre en boucle à chaque paquet BLE
-    private val dernierFranchissement = mutableMapOf<String, Long>()
-
-    // Seuil de proximité (en dBm, ex: -50 dBm)
-    private val SEUIL_CHECKPOINT_DBM = -50
-
-    // Délai minimal entre 2 enregistrements d'un même checkpoint (ex: 5000 ms)
-    private val COOLDOWN_CHECKPOINT_MS = 5000L
-
-    // Prefix/Filtre du nom des balises recherchées/
-    private val FILTRE_NOM_BALISE = "TRACK_BEACON"
-
-    // Coefficient de lissage EMA (entre 0.0 et 1.0)
     private val alphaEma = 0.2
+    private val longueurPasMetres = 0.75
 
+    // Podomètre multi-capteurs
+    private val sensorManager = application.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    private val stepDetectorSensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+    private val stepCounterSensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+    private val accelerometerSensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+
+    private var totalPasCount = 0
+    private var hardwareDetectorCount = 0
+    private var pasAuDemarrage = -1f
+    private var lastAccelerometerStepTimestamp = 0L
+
+    private val trackingBeaconRegex = Regex("""^TRACK_BEACON_\d+$""", RegexOption.IGNORE_CASE)
+
+    // Callback du Scanner BLE
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val nomAppareil = result.scanRecord?.deviceName ?: result.device.name
-            val adresseMac = result.device.address
-            val rssiBrut = result.rssi
-
-            val identifiant = if (!nomAppareil.isNullOrEmpty()) nomAppareil else adresseMac
-
-            // Filtrage : On ne traite que les appareils contenant "TRACK_BEACON"
-            if (!identifiant.contains(FILTRE_NOM_BALISE, ignoreCase = true)) {
+            if (nomAppareil.isNullOrEmpty() || !trackingBeaconRegex.matches(nomAppareil)) {
                 return
             }
 
-            // ---------------------------------------------------------
-            // ÉTAPE 1 : LISSAGE DU SIGNAL (EMA)
-            // ---------------------------------------------------------
+            val rssiBrut = result.rssi
+            val identifiant = nomAppareil
+
+            // Lissage EMA du signal radio
             val rssiLisse = if (historiqueLissage.containsKey(identifiant)) {
-                val ancienneValeur = historiqueLissage[identifiant]!!
-                (alphaEma * rssiBrut) + ((1.0 - alphaEma) * ancienneValeur)
+                (alphaEma * rssiBrut) + ((1.0 - alphaEma) * historiqueLissage[identifiant]!!)
             } else {
-                // Première fois qu'on voit cette balise : on prend le signal brut
                 rssiBrut.toDouble()
             }
-
             historiqueLissage[identifiant] = rssiLisse
-            val rssiFinalInt = rssiLisse.roundToInt()
+            val rssiInt = Math.round(rssiLisse).toInt()
 
-            Log.d("KBLE_SCAN", "Balise TRACK_BEACON: $identifiant | Brut: $rssiBrut | Lissé: $rssiFinalInt")
-
-            // ---------------------------------------------------------
-            // ÉTAPE 2 : DÉTECTION DU PIC (CheckPoint)
-            // ---------------------------------------------------------
-            // On vérifie le RSSI brut (détection immédiate) OU le lissé
-            // avec un anti-rebond (cooldown) pour ne pas émettre à chaque trame BLE.
-            val maintenant = System.currentTimeMillis()
-            val dernierTemps = dernierFranchissement[identifiant] ?: 0L
-
-            Log.d("KBLE_RACE_DEBUG", "Test franchissement pour $identifiant | Brut: $rssiBrut | Lissé: $rssiFinalInt (Seuil: $SEUIL_CHECKPOINT_DBM)")
-
-            if ((rssiBrut >= SEUIL_CHECKPOINT_DBM || rssiFinalInt >= SEUIL_CHECKPOINT_DBM) &&
-                (maintenant - dernierTemps > COOLDOWN_CHECKPOINT_MS)
-            ) {
-                dernierFranchissement[identifiant] = maintenant
-                Log.w("KBLE_RACE", "🏁 CHECKPOINT FRANCHI POUR : $identifiant (RSSI Brut: $rssiBrut, Lissé: $rssiFinalInt) !")
-
-                viewModelScope.launch {
-                    _checkpointEvent.emit(CheckpointEvent(identifiant, rssiBrut))
-                }
-            }
-
-            // Mise à jour de l'interface (pour le mode Diagnostic)
-            val mapMiseAJour = _balisesDetectees.value.toMutableMap()
-            mapMiseAJour[identifiant] = rssiFinalInt
-            _balisesDetectees.value = mapMiseAJour
+            // Mise à jour de la map globale pour le tri en temps réel
+            val mapMaj = _balisesDetectees.value.toMutableMap()
+            mapMaj[identifiant] = rssiInt
+            _balisesDetectees.value = mapMaj
         }
     }
 
-    fun demarrerScan(scanner: android.bluetooth.le.BluetoothLeScanner?) {
-        historiqueLissage.clear()
-        dernierFranchissement.clear()
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
-        scanner?.startScan(null, settings, scanCallback)
+    // --- Gestion du Podomètre ---
+    override fun onSensorChanged(event: SensorEvent?) {
+        val sensorType = event?.sensor?.type ?: return
+
+        when (sensorType) {
+            Sensor.TYPE_ACCELEROMETER -> {
+                val x = event.values[0]
+                val y = event.values[1]
+                val z = event.values[2]
+                val norm = sqrt((x * x + y * y + z * z).toDouble())
+                val now = System.currentTimeMillis()
+                // Détection dynamique de pas via l'accéléromètre (pic > 12.0 m/s² et délai anti-rebond 380 ms)
+                if (norm > 12.0 && (now - lastAccelerometerStepTimestamp) > 380) {
+                    lastAccelerometerStepTimestamp = now
+                    totalPasCount++
+                    _distanceActuelle.value = totalPasCount * longueurPasMetres
+                    Log.d("KBLE_PODOMETER", "Accel Step: pas=$totalPasCount, dist=${_distanceActuelle.value}m")
+                }
+            }
+            Sensor.TYPE_STEP_DETECTOR -> {
+                val steps = event.values[0].toInt()
+                if (steps > 0) {
+                    hardwareDetectorCount += steps
+                    if (hardwareDetectorCount > totalPasCount) {
+                        totalPasCount = hardwareDetectorCount
+                        _distanceActuelle.value = totalPasCount * longueurPasMetres
+                        Log.d("KBLE_PODOMETER", "Step Detector Sync: pas=$totalPasCount, dist=${_distanceActuelle.value}m")
+                    }
+                }
+            }
+            Sensor.TYPE_STEP_COUNTER -> {
+                val pasTotaux = event.values[0]
+                if (pasAuDemarrage == -1f) pasAuDemarrage = pasTotaux
+                val pasFait = (pasTotaux - pasAuDemarrage).toInt().coerceAtLeast(0)
+                if (pasFait > totalPasCount) {
+                    totalPasCount = pasFait
+                    _distanceActuelle.value = totalPasCount * longueurPasMetres
+                    Log.d("KBLE_PODOMETER", "Step Counter Sync: pas=$totalPasCount, dist=${_distanceActuelle.value}m")
+                }
+            }
+        }
     }
 
-    fun arreterScan(scanner: android.bluetooth.le.BluetoothLeScanner?) {
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+    // --- Actions Admin ---
+    fun demarrerCalibration(scanner: android.bluetooth.le.BluetoothLeScanner?) {
+        historiqueLissage.clear()
+        _balisesValidees.value = emptyList()
+        totalPasCount = 0
+        hardwareDetectorCount = 0
+        pasAuDemarrage = -1f
+        _distanceActuelle.value = 0.0
+
+        // 1. Toujours enregistrer l'accéléromètre pour des mises à jour réactives en temps réel
+        accelerometerSensor?.also {
+            val reg = sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+            Log.d("KBLE_PODOMETER", "Accéléromètre temps réel enregistré: $reg")
+        }
+
+        // 2. Enregistrer également les capteurs matériels pour la synchronisation
+        stepDetectorSensor?.also {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST)
+            Log.d("KBLE_PODOMETER", "TYPE_STEP_DETECTOR matériel enregistré")
+        }
+
+        stepCounterSensor?.also {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST)
+            Log.d("KBLE_PODOMETER", "TYPE_STEP_COUNTER matériel enregistré")
+        }
+
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        scanner?.startScan(null, settings, scanCallback)
+        Log.d("KBLE_ADMIN", "Calibration démarrée.")
+    }
+
+    // L'admin appuie sur une balise dans la liste car il est pile en face
+    fun enregistrerBaliseActuelle(identifiant: String, rssiActuel: Int) {
+        val dejaEnregistree = _balisesValidees.value.any { it.adresseMac == identifiant || it.nom == identifiant }
+
+        if (!dejaEnregistree) {
+            val distance = _distanceActuelle.value
+            // On fixe le seuil de déclenchement à un niveau proche du RSSI actuel (ex: RSSI actuel - 5 dBm de marge)
+            val nouvelleBalise = BaliseBleTrack(
+                adresseMac = identifiant,
+                nom = identifiant,
+                distanceMetres = distance,
+                seuilRssiCalibration = rssiActuel - 5
+            )
+
+            _balisesValidees.value = _balisesValidees.value + nouvelleBalise
+            Log.w("KBLE_ADMIN", "📍 Balise $identifiant enregistrée à ${distance}m avec un seuil de ${nouvelleBalise.seuilRssiCalibration} dBm")
+        }
+    }
+
+    fun fermerEtSauvegarderCircuit(scanner: android.bluetooth.le.BluetoothLeScanner?, nomCircuit: String) {
         scanner?.stopScan(scanCallback)
+        sensorManager.unregisterListener(this)
+
+        val circuitFinal = CircuitDto(
+            nomCircuit = nomCircuit,
+            longueurTotaleMetres = _distanceActuelle.value,
+            balises = _balisesValidees.value
+        )
+
+        // Sauvegarde Supabase en arrière-plan (Dispatcher IO)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Exemple d'appel Supabase (à adapter selon votre initialisation client Supabase)
+                // supabase.from("circuits").insert(circuitFinal)
+                Log.d("KBLE_SUPABASE", "Circuit '${circuitFinal.nomCircuit}' sauvegardé avec succès (${circuitFinal.balises.size} balises) !")
+            } catch (e: Exception) {
+                Log.e("KBLE_SUPABASE", "Erreur lors de la sauvegarde Supabase", e)
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        sensorManager.unregisterListener(this)
     }
 }
