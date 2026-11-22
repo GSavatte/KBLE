@@ -1,5 +1,4 @@
 package com.example.kble.race
-
 import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -12,7 +11,7 @@ import kotlinx.coroutines.flow.update
  */
 class CourseViewModel : ViewModel() {
 
-    // --- État global observable ---
+// --- État global observable ---
     private val _uiState = MutableStateFlow(CourseUiState())
     val uiState = _uiState.asStateFlow()
 
