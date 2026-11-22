@@ -30,7 +30,7 @@ private fun AccueilCourseScreen(vm: CourseViewModel, onRetour: () -> Unit) {
     var erreur by remember { mutableStateOf<String?>(null) }
 
     Column(Modifier.fillMaxSize().padding(24.dp), Arrangement.Center, Alignment.CenterHorizontally) {
-        Text("🏎️ Gestion de course", style = MaterialTheme.typography.headlineMedium)
+        Text("Gestion de course", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(24.dp))
         OutlinedTextField(nom, { nom = it }, label = { Text("Votre pseudo") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(16.dp))
@@ -63,7 +63,7 @@ private fun LobbyScreen(vm: CourseViewModel, onRetour: () -> Unit) {
     val estHote = state.joueurLocal?.nom == course.hote
 
     Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("🏁 Lobby", style = MaterialTheme.typography.headlineMedium)
+        Text("Lobby", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(8.dp))
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -80,7 +80,7 @@ private fun LobbyScreen(vm: CourseViewModel, onRetour: () -> Unit) {
                 Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                     Row(Modifier.padding(12.dp).fillMaxWidth(), Arrangement.SpaceBetween) {
                         Text("${i + 1}. ${joueur.nom}")
-                        if (joueur.nom == course.hote) Text("👑 Hôte", style = MaterialTheme.typography.labelSmall)
+                        if (joueur.nom == course.hote) Text("Hôte", style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
@@ -113,9 +113,9 @@ private fun CourseEnCoursScreen(vm: CourseViewModel, onRetour: () -> Unit) {
             }
         }
         Spacer(Modifier.height(16.dp))
-        Button({ vm.enregistrerPassagePorte() }, Modifier.fillMaxWidth()) { Text("📡 Simuler passage de porte") }
+        Button({ vm.enregistrerPassagePorte() }, Modifier.fillMaxWidth()) { Text("Simuler passage de porte") }
         Spacer(Modifier.height(16.dp))
-        Text("🏆 Classement en direct", style = MaterialTheme.typography.titleMedium)
+        Text("Classement en direct", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         LazyColumn(Modifier.weight(1f)) {
             val classement = course.joueurs.sortedBy { it.position }
