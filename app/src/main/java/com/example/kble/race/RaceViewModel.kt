@@ -1,132 +1,167 @@
 package com.example.kble.race
+
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlin.random.Random
 
 /**
  * ViewModel de gestion des courses.
- * Commit 1 : Création d'une course, lobby, rejoindre, classement local.
- * Le serveur distant (Supabase/WebSocket) sera branché dans un commit futur.
+ * Gère : création, lobby, rejoindre, lancement, passages de portes,
+ * compteur de tours, classement live, chronomètre, fin de course et résultats.
  */
 class CourseViewModel : ViewModel() {
 
-// --- État global observable ---
     private val _uiState = MutableStateFlow(CourseUiState())
     val uiState = _uiState.asStateFlow()
 
+    private var timerJob: Job? = null
+
     // ========== Actions Lobby ==========
 
-    /** Crée une nouvelle course et y place le joueur comme hôte */
-    fun creerCourse(nomJoueur: String, nomCircuit: String = "Circuit UQAC", nbTours: Int = 3) {
+    fun creerCourse(nomJoueur: String, nomCircuit: String = "Circuit UQAC", nbTours: Int = 3, portesParTour: Int = 4) {
         val hote = Joueur(nom = nomJoueur)
-        val course = Course(
-            nomCircuit = nomCircuit,
-            hote = nomJoueur,
-            joueurs = listOf(hote),
-            nombreToursTotal = nbTours
-        )
-        _uiState.update {
-            it.copy(
-                course = course,
-                joueurLocal = hote,
-                ecran = EcranCourse.LOBBY
-            )
-        }
+        val course = Course(nomCircuit = nomCircuit, hote = nomJoueur, joueurs = listOf(hote), nombreToursTotal = nbTours, portesParTour = portesParTour)
+        _uiState.update { it.copy(course = course, joueurLocal = hote, ecran = EcranCourse.LOBBY) }
     }
 
-    /** Rejoint une course existante par son code */
     fun rejoindreCourse(codeCourse: String, nomJoueur: String): Boolean {
-        val courseActuelle = _uiState.value.course ?: return false
-
-        // Vérifications
-        if (courseActuelle.id != codeCourse.uppercase()) return false
-        if (courseActuelle.etat != EtatCourse.LOBBY) return false
-        if (courseActuelle.joueurs.size >= courseActuelle.maxJoueurs) return false
-        if (courseActuelle.joueurs.any { it.nom == nomJoueur }) return false
-
+        val c = _uiState.value.course ?: return false
+        if (c.id != codeCourse.uppercase() || c.etat != EtatCourse.LOBBY) return false
+        if (c.joueurs.size >= c.maxJoueurs || c.joueurs.any { it.nom == nomJoueur }) return false
         val joueur = Joueur(nom = nomJoueur)
-        _uiState.update {
-            it.copy(
-                course = courseActuelle.copy(
-                    joueurs = courseActuelle.joueurs + joueur
-                ),
-                joueurLocal = joueur,
-                ecran = EcranCourse.LOBBY
-            )
-        }
+        _uiState.update { it.copy(course = c.copy(joueurs = c.joueurs + joueur), joueurLocal = joueur, ecran = EcranCourse.LOBBY) }
         return true
     }
 
-    /** L'hôte lance la course */
     fun lancerCourse() {
-        val course = _uiState.value.course ?: return
-        if (course.etat != EtatCourse.LOBBY) return
-        if (_uiState.value.joueurLocal?.nom != course.hote) return
-
-        // Attribuer la position initiale à chaque joueur
-        val joueursAvecPosition = course.joueurs.mapIndexed { index, joueur ->
-            joueur.copy(position = index + 1)
-        }
-
+        val c = _uiState.value.course ?: return
+        if (c.etat != EtatCourse.LOBBY || _uiState.value.joueurLocal?.nom != c.hote) return
+        val joueurs = c.joueurs.mapIndexed { i, j -> j.copy(position = i + 1, tourActuel = 1) }
+        val depart = System.currentTimeMillis()
         _uiState.update {
             it.copy(
-                course = course.copy(
-                    etat = EtatCourse.EN_COURS,
-                    joueurs = joueursAvecPosition,
-                    timestampDepart = System.currentTimeMillis()
-                ),
+                course = c.copy(etat = EtatCourse.EN_COURS, joueurs = joueurs, timestampDepart = depart),
+                joueurLocal = joueurs.first { j -> j.id == it.joueurLocal?.id },
                 ecran = EcranCourse.COURSE
             )
+        }
+        demarrerChrono()
+    }
+
+    // ========== Chronomètre live ==========
+
+    private fun demarrerChrono() {
+        timerJob?.cancel()
+        timerJob = viewModelScope.launch {
+            while (true) {
+                delay(100)
+                val s = _uiState.value
+                val c = s.course ?: break
+                if (c.etat != EtatCourse.EN_COURS) break
+                val now = System.currentTimeMillis()
+                // Met à jour le temps du joueur local seulement (les autres via passage de porte)
+                val joueurMAJ = s.joueurLocal?.let { j ->
+                    if (!j.aFini) j.copy(tempsMs = now - c.timestampDepart) else j
+                } ?: break
+                _uiState.update { it.copy(joueurLocal = joueurMAJ) }
+            }
         }
     }
 
     // ========== Actions en Course ==========
 
-    /** Simule le passage d'une porte pour le joueur local (sera remplacé par le BLE) */
+    /** Enregistre le passage d'une porte pour le joueur local (sera remplacé par le BLE) */
     fun enregistrerPassagePorte() {
-        val state = _uiState.value
-        val course = state.course ?: return
-        val joueurLocal = state.joueurLocal ?: return
-        if (course.etat != EtatCourse.EN_COURS) return
+        val s = _uiState.value
+        val c = s.course ?: return
+        val local = s.joueurLocal ?: return
+        if (c.etat != EtatCourse.EN_COURS || local.aFini) return
 
-        val maintenant = System.currentTimeMillis()
-        val joueursMAJ = course.joueurs.map { joueur ->
-            if (joueur.id == joueurLocal.id) {
-                joueur.copy(
-                    dernierePorte = joueur.dernierePorte + 1,
-                    tempsMs = maintenant - course.timestampDepart
-                )
-            } else joueur
+        val now = System.currentTimeMillis()
+        val nouvellePorte = local.dernierePorte + 1
+        val nouveauTour = (nouvellePorte / c.portesParTour) + 1
+        val aFini = nouvellePorte >= c.nombreToursTotal * c.portesParTour
+
+        val joueursMAJ = c.joueurs.map { j ->
+            if (j.id == local.id) {
+                j.copy(dernierePorte = nouvellePorte, tourActuel = if (aFini) c.nombreToursTotal else nouveauTour.coerceAtMost(c.nombreToursTotal), tempsMs = now - c.timestampDepart, aFini = aFini)
+            } else j
         }
 
-        // Recalcul du classement : plus de portes = meilleur ; à portes égales, moins de temps = meilleur
-        val joueursClasses = joueursMAJ
-            .sortedWith(compareByDescending<Joueur> { it.dernierePorte }.thenBy { it.tempsMs })
-            .mapIndexed { index, joueur -> joueur.copy(position = index + 1) }
+        val joueursClasses = classerJoueurs(joueursMAJ)
+        val moi = joueursClasses.first { it.id == local.id }
 
-        val joueurMAJ = joueursClasses.first { it.id == joueurLocal.id }
+        // Vérifier si tous ont fini
+        val courseTerminee = joueursClasses.all { it.aFini }
 
         _uiState.update {
             it.copy(
-                course = course.copy(joueurs = joueursClasses),
-                joueurLocal = joueurMAJ
+                course = c.copy(joueurs = joueursClasses, etat = if (courseTerminee) EtatCourse.TERMINEE else EtatCourse.EN_COURS),
+                joueurLocal = moi,
+                ecran = if (courseTerminee) EcranCourse.RESULTATS else EcranCourse.COURSE
             )
         }
+        if (courseTerminee) timerJob?.cancel()
+    }
+
+    /** Simule un passage de porte pour un adversaire aléatoire (pour le test local) */
+    fun simulerAdversaire() {
+        val c = _uiState.value.course ?: return
+        val local = _uiState.value.joueurLocal ?: return
+        if (c.etat != EtatCourse.EN_COURS) return
+
+        val adversaires = c.joueurs.filter { it.id != local.id && !it.aFini }
+        if (adversaires.isEmpty()) return
+
+        val cible = adversaires[Random.nextInt(adversaires.size)]
+        val now = System.currentTimeMillis()
+        val nouvellePorte = cible.dernierePorte + 1
+        val nouveauTour = (nouvellePorte / c.portesParTour) + 1
+        val aFini = nouvellePorte >= c.nombreToursTotal * c.portesParTour
+
+        val joueursMAJ = c.joueurs.map { j ->
+            if (j.id == cible.id) {
+                j.copy(dernierePorte = nouvellePorte, tourActuel = if (aFini) c.nombreToursTotal else nouveauTour.coerceAtMost(c.nombreToursTotal), tempsMs = now - c.timestampDepart, aFini = aFini)
+            } else j
+        }
+        val joueursClasses = classerJoueurs(joueursMAJ)
+        val moi = joueursClasses.first { it.id == local.id }
+        val courseTerminee = joueursClasses.all { it.aFini }
+
+        _uiState.update {
+            it.copy(
+                course = c.copy(joueurs = joueursClasses, etat = if (courseTerminee) EtatCourse.TERMINEE else EtatCourse.EN_COURS),
+                joueurLocal = moi,
+                ecran = if (courseTerminee) EcranCourse.RESULTATS else EcranCourse.COURSE
+            )
+        }
+        if (courseTerminee) timerJob?.cancel()
     }
 
     /** Quitter / abandonner */
     fun quitterCourse() {
+        timerJob?.cancel()
         _uiState.update { CourseUiState() }
+    }
+
+    private fun classerJoueurs(joueurs: List<Joueur>): List<Joueur> =
+        joueurs.sortedWith(compareByDescending<Joueur> { it.dernierePorte }.thenBy { it.tempsMs })
+            .mapIndexed { i, j -> j.copy(position = i + 1) }
+
+    override fun onCleared() {
+        super.onCleared()
+        timerJob?.cancel()
     }
 }
 
 /** Écrans du flux de course */
-enum class EcranCourse {
-    ACCUEIL,    // Choix créer / rejoindre
-    LOBBY,      // Salle d'attente
-    COURSE      // Course en cours
-}
+enum class EcranCourse { ACCUEIL, LOBBY, COURSE, RESULTATS }
 
 /** État complet de l'UI course */
 data class CourseUiState(
