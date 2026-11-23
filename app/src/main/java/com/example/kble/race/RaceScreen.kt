@@ -209,12 +209,32 @@ private fun CourseEnCoursScreen(vm: CourseViewModel, onRetour: () -> Unit) {
     val moi = state.joueurLocal ?: return
     val totalPortes = course.nombreToursTotal * course.portesParTour
 
+    // Récupération du scanner BLE
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val bluetoothManager = context.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
+    val scanner = bluetoothManager.adapter?.bluetoothLeScanner
+
+    // Démarre le scan dès que la course commence, et le coupe dès qu'on quitte l'écran
+    DisposableEffect(Unit) {
+        vm.demarrerScanCourse(scanner)
+        onDispose { vm.arreterScanCourse(scanner) }
+    }
+
+    // Calcule le nom de la prochaine balise à franchir pour l'afficher au joueur
+    val prochaineBalise = if (state.balisesDuCircuit.isNotEmpty() && !moi.aFini) {
+        state.balisesDuCircuit[moi.dernierePorte % state.balisesDuCircuit.size]
+    } else null
+
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
             Column(Modifier.padding(16.dp)) {
                 Text("Position : ${moi.position}/${course.joueurs.size}", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
                 Text("Tour ${moi.tourActuel}/${course.nombreToursTotal} · Porte ${moi.dernierePorte}/$totalPortes")
                 Text("Chrono : ${"%.1f".format(moi.tempsMs / 1000.0)}s", style = MaterialTheme.typography.bodyLarge)
+                prochaineBalise?.let {
+                    Spacer(Modifier.height(4.dp))
+                    Text("🎯 Prochaine balise : ${it.nom} (seuil ${it.seuilRssiCalibration} dBm)", style = MaterialTheme.typography.labelMedium)
+                }
             }
         }
         Spacer(Modifier.height(12.dp))

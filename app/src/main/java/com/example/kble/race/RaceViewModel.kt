@@ -3,6 +3,7 @@ package com.example.kble.race
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.kble.diagnostic.BaliseBleTrack
 import com.example.kble.diagnostic.CircuitDb
 import com.example.kble.network.KbleSupabase
 import io.github.jan.supabase.annotations.SupabaseExperimental
@@ -26,9 +27,7 @@ import kotlin.random.Random
 @OptIn(SupabaseExperimental::class)
 class CourseViewModel : ViewModel() {
 
-    init {
-        chargerCircuits()
-    }
+    private var lecturesConsecutivesValides = 0
 
     fun chargerCircuits() {
         if (!KbleSupabase.isConfigured) return
@@ -47,10 +46,19 @@ class CourseViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(CourseUiState())
     val uiState = _uiState.asStateFlow()
 
+    init {
+        chargerCircuits()
+    }
+
     private var timerJob: Job? = null
     private var realtimeJobs = mutableListOf<Job>()
 
     val isOnline: Boolean get() = KbleSupabase.isConfigured
+
+    private val historiqueLissage = mutableMapOf<String, Double>()
+    private val alphaEma = 0.2
+    private var dernierPassageMs = 0L
+    private val cooldownPassageMs = 3000L
 
     // ========== Actions Lobby ==========
 
@@ -93,6 +101,7 @@ class CourseViewModel : ViewModel() {
                     )
                 }
                 observerCourseRealtime(course.id, hoteAvecCourse.id)
+                chargerBalisesDuCircuit(course.circuitId)
                 onComplete(true, null)
             } catch (e: Exception) {
                 Log.e("KBLE_RACE", "Erreur création course Supabase", e)
@@ -167,6 +176,7 @@ class CourseViewModel : ViewModel() {
                     it.copy(course = courseAvecJoueurs, joueurLocal = joueur, ecran = EcranCourse.LOBBY, chargement = false)
                 }
                 observerCourseRealtime(code, joueur.id)
+                chargerBalisesDuCircuit(course.circuitId)
                 onComplete(true, null)
             } catch (e: Exception) {
                 Log.e("KBLE_RACE", "Erreur rejoindre course Supabase", e)
@@ -439,6 +449,26 @@ class CourseViewModel : ViewModel() {
         _uiState.update { CourseUiState() }
     }
 
+    private fun chargerBalisesDuCircuit(circuitId: String?) {
+        Log.d("KBLE_RACE", "Tentative chargement balises pour circuitId=$circuitId")
+        if (circuitId == null || !KbleSupabase.isConfigured) return
+
+        viewModelScope.launch {
+            try {
+                val balises = KbleSupabase.client
+                    .from("balises_circuit")
+                    .select { filter { eq("circuit_id", circuitId) } }
+                    .decodeList<BaliseBleTrack>()
+                    .sortedBy { it.ordrePorte }
+
+                _uiState.update { it.copy(balisesDuCircuit = balises) }
+                Log.d("KBLE_RACE", "✅ ${balises.size} balises chargées : ${balises.map { it.nom }}")
+            } catch (e: Exception) {
+                Log.e("KBLE_RACE", "❌ Erreur chargement balises", e)
+            }
+        }
+    }
+
     private fun classerJoueurs(joueurs: List<Joueur>): List<Joueur> =
         joueurs.sortedWith(compareByDescending<Joueur> { it.dernierePorte }.thenBy { it.tempsMs })
             .mapIndexed { i, j -> j.copy(position = i + 1) }
@@ -447,6 +477,65 @@ class CourseViewModel : ViewModel() {
         super.onCleared()
         timerJob?.cancel()
         realtimeJobs.forEach { it.cancel() }
+    }
+
+    private val raceScanCallback = object : android.bluetooth.le.ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
+            val state = _uiState.value
+            val course = state.course ?: return
+            val local = state.joueurLocal ?: return
+            val balises = state.balisesDuCircuit
+
+            if (course.etat != EtatCourse.EN_COURS || local.aFini || balises.isEmpty()) {
+                Log.d("KBLE_RACE_BLE", "Ignoré : etat=${course.etat}, aFini=${local.aFini}, nbBalises=${balises.size}")
+                return
+            }
+
+            val nomAppareil = result.scanRecord?.deviceName ?: result.device.name ?: return
+            val indexAttendu = local.dernierePorte % balises.size
+            val baliseAttendue = balises[indexAttendu]
+
+            if (!nomAppareil.equals(baliseAttendue.nom, ignoreCase = true)) return
+
+            val rssiBrut = result.rssi
+            val ancienneValeur = historiqueLissage[nomAppareil] ?: -100.0
+            val rssiLisse = (alphaEma * rssiBrut) + ((1.0 - alphaEma) * ancienneValeur)
+            historiqueLissage[nomAppareil] = rssiLisse
+            val rssiFinal = Math.round(rssiLisse).toInt()
+
+            Log.d("KBLE_RACE_BLE", "Vu ${baliseAttendue.nom} | Brut=$rssiBrut | Lissé=$rssiFinal | Seuil=${baliseAttendue.seuilRssiCalibration}")
+
+            val maintenant = System.currentTimeMillis()
+            if (rssiFinal >= baliseAttendue.seuilRssiCalibration) {
+                lecturesConsecutivesValides++
+                val maintenant = System.currentTimeMillis()
+                if (lecturesConsecutivesValides >= 3 && (maintenant - dernierPassageMs) > cooldownPassageMs) {
+                    dernierPassageMs = maintenant
+                    lecturesConsecutivesValides = 0
+                    historiqueLissage.remove(nomAppareil)
+                    Log.w("KBLE_RACE_BLE", "🏁 PASSAGE VALIDÉ !")
+                    enregistrerPassagePorte()
+                }
+            } else {
+                lecturesConsecutivesValides = 0
+            }
+        }
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    fun demarrerScanCourse(scanner: android.bluetooth.le.BluetoothLeScanner?) {
+        historiqueLissage.clear()
+        val settings = android.bluetooth.le.ScanSettings.Builder()
+            .setScanMode(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+        scanner?.startScan(null, settings, raceScanCallback)
+        Log.d("KBLE_RACE", "Scanner BLE de course démarré")
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    fun arreterScanCourse(scanner: android.bluetooth.le.BluetoothLeScanner?) {
+        scanner?.stopScan(raceScanCallback)
+        Log.d("KBLE_RACE", "Scanner BLE de course arrêté")
     }
 }
 
@@ -459,6 +548,7 @@ data class CourseUiState(
     val joueurLocal: Joueur? = null,
     val ecran: EcranCourse = EcranCourse.ACCUEIL,
     val circuitsDisponibles: List<CircuitDb> = emptyList(),
+    val balisesDuCircuit: List<BaliseBleTrack> = emptyList(),
     val chargement: Boolean = false,
     val erreur: String? = null,
     val messageInfo: String? = null

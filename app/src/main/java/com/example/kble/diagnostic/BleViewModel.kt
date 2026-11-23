@@ -38,7 +38,7 @@ class BleViewModel(application: Application) : AndroidViewModel(application), Se
 
     // --- Logique interne ---
     private val historiqueLissage = mutableMapOf<String, Double>()
-    private val alphaEma = 0.2
+    private val alphaEma = 0.5
     private val longueurPasMetres = 0.75
 
     // Podomètre multi-capteurs
