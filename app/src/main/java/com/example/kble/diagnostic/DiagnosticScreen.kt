@@ -36,6 +36,7 @@ fun DiagnosticScreen(
     val scanner = bluetoothManager.adapter?.bluetoothLeScanner
 
     var enCoursDeCalibration by remember { mutableStateOf(false) }
+    var nomCircuit by remember { mutableStateOf("Circuit UQAC") }
 
     val getRequiredPermissions = {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -77,11 +78,21 @@ fun DiagnosticScreen(
     }
 
     DisposableEffect(Unit) {
-        onDispose { scanner?.let { viewModel.fermerEtSauvegarderCircuit(it, "Grand Prix UQAC") } }
+        onDispose { viewModel.arreterCapteurs(scanner) }
     }
 
     Column(modifier = Modifier.padding(16.dp).fillMaxSize()) {
         Text("🛠 Calibration & Configuration Admin", style = MaterialTheme.typography.titleMedium)
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = nomCircuit,
+            onValueChange = { nomCircuit = it },
+            label = { Text("Nom du circuit") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
         Spacer(modifier = Modifier.height(8.dp))
         Text("Distance parcourue : ${String.format("%.1f", distance)} mètres", style = MaterialTheme.typography.headlineSmall)
 
@@ -98,10 +109,13 @@ fun DiagnosticScreen(
                     }
                 } else {
                     enCoursDeCalibration = false
-                    viewModel.fermerEtSauvegarderCircuit(scanner, "Grand Prix UQAC")
+                    viewModel.fermerEtSauvegarderCircuit(
+                        scanner = scanner,
+                        nomCircuit = nomCircuit.trim().ifBlank { "Circuit UQAC" }
+                    )
                 }
             }) {
-                Text(if (enCoursDeCalibration) "🏁 Valider & Envoyer sur Supabase" else "▶️ Démarrer l'étalonnage")
+                Text(if (enCoursDeCalibration) "🏁 Valider & Envoyer" else "▶️ Démarrer l'étalonnage")
             }
 
             Button(onClick = onRetour) { Text("Retour") }

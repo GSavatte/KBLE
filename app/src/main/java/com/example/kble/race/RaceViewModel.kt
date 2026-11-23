@@ -3,6 +3,7 @@ package com.example.kble.race
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.kble.diagnostic.CircuitDb
 import com.example.kble.network.KbleSupabase
 import io.github.jan.supabase.annotations.SupabaseExperimental
 import io.github.jan.supabase.postgrest.from
@@ -25,6 +26,24 @@ import kotlin.random.Random
 @OptIn(SupabaseExperimental::class)
 class CourseViewModel : ViewModel() {
 
+    init {
+        chargerCircuits()
+    }
+
+    fun chargerCircuits() {
+        if (!KbleSupabase.isConfigured) return
+        viewModelScope.launch {
+            try {
+                val circuits = KbleSupabase.client
+                    .from("circuits")
+                    .select()
+                    .decodeList<CircuitDb>()
+                _uiState.update { it.copy(circuitsDisponibles = circuits) }
+            } catch (e: Exception) {
+                Log.e("KBLE_RACE", "Erreur chargement circuits", e)
+            }
+        }
+    }
     private val _uiState = MutableStateFlow(CourseUiState())
     val uiState = _uiState.asStateFlow()
 
@@ -35,14 +54,20 @@ class CourseViewModel : ViewModel() {
 
     // ========== Actions Lobby ==========
 
-    fun creerCourse(nomJoueur: String, nomCircuit: String = "Circuit UQAC", nbTours: Int = 3, portesParTour: Int = 4, onComplete: (Boolean, String?) -> Unit = { _, _ -> }) {
+    fun creerCourse(
+        nomJoueur: String,
+        circuit: CircuitDb? = null,
+        nbTours: Int = 3,
+        onComplete: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
         val hote = Joueur(nom = nomJoueur)
         val course = Course(
-            nomCircuit = nomCircuit,
+            circuitId = circuit?.id,
+            nomCircuit = circuit?.nomCircuit ?: "Circuit UQAC",
             hote = nomJoueur,
             joueurs = listOf(hote),
             nombreToursTotal = nbTours,
-            portesParTour = portesParTour
+            portesParTour = circuit?.nombrePortes?.takeIf { it > 0 } ?: 4
         )
         val hoteAvecCourse = hote.copy(courseId = course.id)
 
@@ -433,6 +458,7 @@ data class CourseUiState(
     val course: Course? = null,
     val joueurLocal: Joueur? = null,
     val ecran: EcranCourse = EcranCourse.ACCUEIL,
+    val circuitsDisponibles: List<CircuitDb> = emptyList(),
     val chargement: Boolean = false,
     val erreur: String? = null,
     val messageInfo: String? = null

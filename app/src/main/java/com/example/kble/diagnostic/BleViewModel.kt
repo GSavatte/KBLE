@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.sqrt
+import com.example.kble.network.KbleSupabase
+import io.github.jan.supabase.postgrest.from
 
 @SuppressLint("MissingPermission")
 class BleViewModel(application: Application) : AndroidViewModel(application), SensorEventListener {
@@ -178,22 +180,44 @@ class BleViewModel(application: Application) : AndroidViewModel(application), Se
         scanner?.stopScan(scanCallback)
         sensorManager.unregisterListener(this)
 
-        val circuitFinal = CircuitDto(
+        val balises = _balisesValidees.value
+        if (balises.isEmpty() || !KbleSupabase.isConfigured) return
+
+        val nouveauCircuit = CircuitDb(
             nomCircuit = nomCircuit,
             longueurTotaleMetres = _distanceActuelle.value,
-            balises = _balisesValidees.value
+            nombrePortes = balises.size
         )
 
-        // Sauvegarde Supabase en arrière-plan (Dispatcher IO)
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // Exemple d'appel Supabase (à adapter selon votre initialisation client Supabase)
-                // supabase.from("circuits").insert(circuitFinal)
-                Log.d("KBLE_SUPABASE", "Circuit '${circuitFinal.nomCircuit}' sauvegardé avec succès (${circuitFinal.balises.size} balises) !")
+                // 1. Insère le circuit et récupère l'ID généré par Postgres
+                val circuitCree = KbleSupabase.client
+                    .from("circuits")
+                    .insert(nouveauCircuit) { select() }
+                    .decodeSingle<CircuitDb>()
+
+                val circuitId = circuitCree.id ?: return@launch
+
+                // 2. Lie chaque balise au circuit avec son ordre de passage
+                val balisesLiees = balises.mapIndexed { index, balise ->
+                    balise.copy(circuitId = circuitId, ordrePorte = index)
+                }
+
+                KbleSupabase.client
+                    .from("balises_circuit")
+                    .insert(balisesLiees)
+
+                Log.d("KBLE_SUPABASE", "Circuit '$nomCircuit' sauvegardé (${balisesLiees.size} balises)")
             } catch (e: Exception) {
-                Log.e("KBLE_SUPABASE", "Erreur lors de la sauvegarde Supabase", e)
+                Log.e("KBLE_SUPABASE", "Erreur sauvegarde circuit", e)
             }
         }
+    }
+
+    fun arreterCapteurs(scanner: android.bluetooth.le.BluetoothLeScanner?) {
+        scanner?.stopScan(scanCallback)
+        sensorManager.unregisterListener(this)
     }
 
     override fun onCleared() {

@@ -25,6 +25,7 @@ enum class EtatCourse { LOBBY, EN_COURS, TERMINEE }
 @Serializable
 data class Course(
     val id: String = UUID.randomUUID().toString().take(6).uppercase(),
+    @SerialName("circuit_id") val circuitId: String? = null,
     @SerialName("nom_circuit") val nomCircuit: String = "Circuit UQAC",
     val hote: String = "",
     @kotlinx.serialization.Transient val joueurs: List<Joueur> = emptyList(),

@@ -1,16 +1,22 @@
 package com.example.kble.diagnostic
 
-// Représente une balise physique étalonnée
-data class BaliseBleTrack(
-    val adresseMac: String,
-    val nom: String,
-    val distanceMetres: Double,
-    val seuilRssiCalibration: Int // Le RSSI enregistré "pile en face" par l'admin
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class CircuitDb(
+    val id: String? = null,
+    @SerialName("nom_circuit") val nomCircuit: String,
+    @SerialName("longueur_totale_m") val longueurTotaleMetres: Double,
+    @SerialName("nombre_portes") val nombrePortes: Int = 0
 )
 
-// Représente le circuit complet à envoyer sur Supabase
-data class CircuitDto(
-    val nomCircuit: String,
-    val longueurTotaleMetres: Double,
-    val balises: List<BaliseBleTrack>
+@Serializable
+data class BaliseBleTrack(
+    @SerialName("circuit_id") val circuitId: String? = null,
+    @SerialName("ordre_porte") val ordrePorte: Int = 0,
+    @SerialName("adresse_mac") val adresseMac: String,
+    val nom: String,
+    @SerialName("distance_metres") val distanceMetres: Double,
+    @SerialName("seuil_rssi") val seuilRssiCalibration: Int
 )

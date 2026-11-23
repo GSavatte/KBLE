@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.kble.diagnostic.CircuitDb
 
 @Composable
 fun RaceScreen(viewModel: CourseViewModel = viewModel(), onRetour: () -> Unit) {
@@ -30,6 +31,15 @@ private fun AccueilCourseScreen(vm: CourseViewModel, onRetour: () -> Unit) {
     var nom by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var erreurLocale by remember { mutableStateOf<String?>(null) }
+
+    var menuOuvert by remember { mutableStateOf(false) }
+    var circuitSelectionne by remember { mutableStateOf<CircuitDb?>(null) }
+
+    LaunchedEffect(state.circuitsDisponibles) {
+        if (circuitSelectionne == null && state.circuitsDisponibles.isNotEmpty()) {
+            circuitSelectionne = state.circuitsDisponibles.first()
+        }
+    }
 
     Column(Modifier.fillMaxSize().padding(24.dp), Arrangement.Center, Alignment.CenterHorizontally) {
         Text("Gestion de course", style = MaterialTheme.typography.headlineMedium)
@@ -56,11 +66,40 @@ private fun AccueilCourseScreen(vm: CourseViewModel, onRetour: () -> Unit) {
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(16.dp))
+        if (state.circuitsDisponibles.isNotEmpty()) {
+            @OptIn(ExperimentalMaterial3Api::class)
+            ExposedDropdownMenuBox(
+                expanded = menuOuvert,
+                onExpandedChange = { menuOuvert = it },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                OutlinedTextField(
+                    value = circuitSelectionne?.let { "${it.nomCircuit} (${it.nombrePortes} portes)" } ?: "Choisir un circuit",
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Circuit") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuOuvert) },
+                    modifier = Modifier.menuAnchor().fillMaxWidth()
+                )
+                ExposedDropdownMenu(expanded = menuOuvert, onDismissRequest = { menuOuvert = false }) {
+                    state.circuitsDisponibles.forEach { circuit ->
+                        DropdownMenuItem(
+                            text = { Text("${circuit.nomCircuit} · ${"%.0f".format(circuit.longueurTotaleMetres)}m (${circuit.nombrePortes} portes)") },
+                            onClick = {
+                                circuitSelectionne = circuit
+                                menuOuvert = false
+                            }
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
         Button(
             onClick = {
                 if (nom.isBlank()) { erreurLocale = "Entrez un pseudo"; return@Button }
                 erreurLocale = null
-                vm.creerCourse(nom.trim())
+                vm.creerCourse(nom.trim(), circuit = circuitSelectionne)
             },
             modifier = Modifier.fillMaxWidth(),
             enabled = !state.chargement
