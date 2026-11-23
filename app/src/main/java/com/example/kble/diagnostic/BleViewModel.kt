@@ -201,7 +201,7 @@ class BleViewModel(application: Application) : AndroidViewModel(application), Se
 
                 // 2. Lie chaque balise au circuit avec son ordre de passage
                 val balisesLiees = balises.mapIndexed { index, balise ->
-                    balise.copy(circuitId = circuitId, ordrePorte = index)
+                    balise.copy(circuitId = circuitId, ordrePorte = index + 1)
                 }
 
                 KbleSupabase.client

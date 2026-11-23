@@ -1,5 +1,6 @@
 package com.example.kble.diagnostic
 
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -14,7 +15,7 @@ data class CircuitDb(
 @Serializable
 data class BaliseBleTrack(
     @SerialName("circuit_id") val circuitId: String? = null,
-    @SerialName("ordre_porte") val ordrePorte: Int = 0,
+    @EncodeDefault @SerialName("ordre_porte") val ordrePorte: Int = 0,
     @SerialName("adresse_mac") val adresseMac: String,
     val nom: String,
     @SerialName("distance_metres") val distanceMetres: Double,
