@@ -8,7 +8,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
@@ -27,30 +26,79 @@ fun RaceScreen(viewModel: CourseViewModel = viewModel(), onRetour: () -> Unit) {
 
 @Composable
 private fun AccueilCourseScreen(vm: CourseViewModel, onRetour: () -> Unit) {
+    val state by vm.uiState.collectAsState()
     var nom by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
-    var erreur by remember { mutableStateOf<String?>(null) }
+    var erreurLocale by remember { mutableStateOf<String?>(null) }
 
     Column(Modifier.fillMaxSize().padding(24.dp), Arrangement.Center, Alignment.CenterHorizontally) {
         Text("Gestion de course", style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(8.dp))
+
+        //badge statut réseau
+        Surface(
+            color = if (vm.isOnline) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+            shape = MaterialTheme.shapes.small
+        ) {
+            Text(
+                text = if (vm.isOnline) "Supabase connecté" else "Mode local",
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+
         Spacer(Modifier.height(24.dp))
-        OutlinedTextField(nom, { nom = it }, label = { Text("Votre pseudo") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(
+            value = nom,
+            onValueChange = { nom = it },
+            label = { Text("Votre pseudo") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
         Spacer(Modifier.height(16.dp))
-        Button(onClick = {
-            if (nom.isBlank()) { erreur = "Entrez un pseudo"; return@Button }
-            vm.creerCourse(nom.trim())
-        }, Modifier.fillMaxWidth()) { Text("Créer une course") }
+        Button(
+            onClick = {
+                if (nom.isBlank()) { erreurLocale = "Entrez un pseudo"; return@Button }
+                erreurLocale = null
+                vm.creerCourse(nom.trim())
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !state.chargement
+        ) {
+            if (state.chargement) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text("Créer une course")
+        }
         Spacer(Modifier.height(8.dp))
         Text("— ou —", style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(code, { code = it.uppercase() }, label = { Text("Code de la course") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(
+            value = code,
+            onValueChange = { code = it.uppercase() },
+            label = { Text("Code de la course") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
         Spacer(Modifier.height(8.dp))
-        Button(onClick = {
-            if (nom.isBlank()) { erreur = "Entrez un pseudo"; return@Button }
-            if (code.isBlank()) { erreur = "Entrez un code"; return@Button }
-            if (!vm.rejoindreCourse(code.trim(), nom.trim())) erreur = "Code invalide ou course pleine"
-        }, Modifier.fillMaxWidth()) { Text("Rejoindre une course") }
-        erreur?.let { Spacer(Modifier.height(8.dp)); Text(it, color = MaterialTheme.colorScheme.error) }
+        Button(
+            onClick = {
+                if (nom.isBlank()) { erreurLocale = "Entrez un pseudo"; return@Button }
+                if (code.isBlank()) { erreurLocale = "Entrez un code"; return@Button }
+                erreurLocale = null
+                vm.rejoindreCourse(code.trim(), nom.trim())
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !state.chargement
+        ) {
+            if (state.chargement) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text("Rejoindre une course")
+        }
+
+        val messageErreur = erreurLocale ?: state.erreur
+        messageErreur?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+
         Spacer(Modifier.height(24.dp))
         TextButton(onClick = onRetour) { Text("← Retour à l'accueil") }
     }
@@ -65,23 +113,30 @@ private fun LobbyScreen(vm: CourseViewModel, onRetour: () -> Unit) {
     val estHote = state.joueurLocal?.nom == course.hote
 
     Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("Lobby", style = MaterialTheme.typography.headlineMedium)
+        Text("Lobby de course", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(8.dp))
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("Code de la course", style = MaterialTheme.typography.labelMedium)
+                Text("Code d'accès", style = MaterialTheme.typography.labelMedium)
                 Text(course.id, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
                 Text("${course.nomCircuit} · ${course.nombreToursTotal} tours · ${course.portesParTour} portes/tour", style = MaterialTheme.typography.bodySmall)
+                if (vm.isOnline) {
+                    Text("Synchronisation temps réel active", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                }
             }
         }
         Spacer(Modifier.height(16.dp))
-        Text("Joueurs (${course.joueurs.size}/${course.maxJoueurs})", style = MaterialTheme.typography.titleMedium)
+        Text("Joueurs connectés (${course.joueurs.size}/${course.maxJoueurs})", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             itemsIndexed(course.joueurs) { i, joueur ->
-                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                    Row(Modifier.padding(12.dp).fillMaxWidth(), Arrangement.SpaceBetween) {
-                        Text("${i + 1}. ${joueur.nom}")
+                val estMoi = joueur.id == state.joueurLocal?.id
+                Card(
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    colors = if (estMoi) CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer) else CardDefaults.cardColors()
+                ) {
+                    Row(Modifier.padding(12.dp).fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                        Text("${i + 1}. ${joueur.nom} ${if (estMoi) "(vous)" else ""}", fontWeight = if (estMoi) FontWeight.Bold else FontWeight.Normal)
                         if (joueur.nom == course.hote) Text("Hôte", style = MaterialTheme.typography.labelSmall)
                     }
                 }
@@ -90,9 +145,17 @@ private fun LobbyScreen(vm: CourseViewModel, onRetour: () -> Unit) {
         Spacer(Modifier.height(16.dp))
         if (estHote) {
             Button({ vm.lancerCourse() }, Modifier.fillMaxWidth(), enabled = course.joueurs.isNotEmpty()) {
-                Text("🚦 Lancer la course !")
+                Text("Lancer la course pour tous !")
             }
-        } else Text("En attente du lancement par l'hôte…")
+        } else {
+            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Row(Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Text("En attente du départ par l'hôte…", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         TextButton({ vm.quitterCourse(); onRetour() }) { Text("Quitter le lobby") }
     }
@@ -108,24 +171,22 @@ private fun CourseEnCoursScreen(vm: CourseViewModel, onRetour: () -> Unit) {
     val totalPortes = course.nombreToursTotal * course.portesParTour
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        // Carte de statut personnel
         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
             Column(Modifier.padding(16.dp)) {
                 Text("Position : ${moi.position}/${course.joueurs.size}", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
                 Text("Tour ${moi.tourActuel}/${course.nombreToursTotal} · Porte ${moi.dernierePorte}/$totalPortes")
-                Text("Temps : ${"%.1f".format(moi.tempsMs / 1000.0)}s", style = MaterialTheme.typography.bodyLarge)
+                Text("Chrono : ${"%.1f".format(moi.tempsMs / 1000.0)}s", style = MaterialTheme.typography.bodyLarge)
             }
         }
         Spacer(Modifier.height(12.dp))
 
-        // Boutons d'action
         Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp)) {
             Button({ vm.enregistrerPassagePorte() }, Modifier.weight(1f), enabled = !moi.aFini) {
-                Text(if (moi.aFini) "Arrivé !" else "⚡ Porte")
+                Text(if (moi.aFini) "Arrivé !" else "Valider porte")
             }
-            if (course.joueurs.size > 1) {
+            if (!vm.isOnline && course.joueurs.size > 1) {
                 OutlinedButton({ vm.simulerAdversaire() }, Modifier.weight(1f)) {
-                    Text("🤖 Simul. IA")
+                    Text("Simulation")
                 }
             }
         }
@@ -134,7 +195,6 @@ private fun CourseEnCoursScreen(vm: CourseViewModel, onRetour: () -> Unit) {
         Text("Classement en direct", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
 
-        // Tableau de classement
         LazyColumn(Modifier.weight(1f)) {
             val classement = course.joueurs.sortedBy { it.position }
             itemsIndexed(classement) { _, joueur ->
@@ -147,7 +207,7 @@ private fun CourseEnCoursScreen(vm: CourseViewModel, onRetour: () -> Unit) {
                         val medaille = when (joueur.position) { 1 -> "🥇"; 2 -> "🥈"; 3 -> "🥉"; else -> "  " }
                         Text("$medaille ${joueur.nom}", fontWeight = if (estMoi) FontWeight.Bold else FontWeight.Normal)
                         Text(
-                            if (joueur.aFini) "${"%.1f".format(joueur.tempsMs / 1000.0)}s"
+                            if (joueur.aFini) "Terminé (${"%.1f".format(joueur.tempsMs / 1000.0)}s)"
                             else "T${joueur.tourActuel} P${joueur.dernierePorte}"
                         )
                     }
@@ -155,7 +215,7 @@ private fun CourseEnCoursScreen(vm: CourseViewModel, onRetour: () -> Unit) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        TextButton({ vm.quitterCourse(); onRetour() }) { Text("🏳️ Abandonner la course") }
+        TextButton({ vm.quitterCourse(); onRetour() }) { Text("Abandonner la course") }
     }
 }
 
@@ -173,7 +233,6 @@ private fun ResultatsScreen(vm: CourseViewModel, onRetour: () -> Unit) {
         Text(course.nomCircuit, style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(24.dp))
 
-        // Podium top 3
         classement.take(3).forEach { joueur ->
             val medaille = when (joueur.position) { 1 -> "🥇"; 2 -> "🥈"; 3 -> "🥉"; else -> "" }
             Card(
@@ -187,7 +246,6 @@ private fun ResultatsScreen(vm: CourseViewModel, onRetour: () -> Unit) {
             }
         }
 
-        // Reste du classement
         if (classement.size > 3) {
             Spacer(Modifier.height(16.dp))
             classement.drop(3).forEach { joueur ->
